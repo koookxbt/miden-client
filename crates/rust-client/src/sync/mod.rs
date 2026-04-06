@@ -59,7 +59,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::cmp::max;
 
-use miden_protocol::account::AccountId;
+use miden_protocol::account::{Account, AccountId};
 use miden_protocol::block::BlockNumber;
 use miden_protocol::note::NoteId;
 use miden_protocol::transaction::TransactionId;
@@ -75,7 +75,13 @@ mod tag;
 pub use tag::{NoteTagRecord, NoteTagSource};
 
 mod state_sync;
-pub use state_sync::{NoteUpdateAction, OnNoteReceived, StateSync, StateSyncInput};
+pub use state_sync::{
+    AccountSyncData,
+    NoteUpdateAction,
+    OnNoteReceived,
+    StateSync,
+    StateSyncInput,
+};
 
 mod state_sync_update;
 pub use state_sync_update::{
@@ -160,13 +166,24 @@ where
     /// This includes all tracked account headers, all unique note tags, all unspent input and
     /// output notes, and all uncommitted transactions.
     pub async fn build_sync_input(&self) -> Result<StateSyncInput, ClientError> {
-        let accounts = self
-            .store
-            .get_account_headers()
-            .await?
-            .into_iter()
-            .map(|(acc_header, _)| acc_header)
-            .collect();
+        let account_headers = self.store.get_account_headers().await?;
+
+        let mut accounts = Vec::with_capacity(account_headers.len());
+        for (header, _status) in account_headers {
+            if header.id().is_private() {
+                accounts.push(AccountSyncData::from(header));
+            } else {
+                // Load full account for public accounts to support delta sync
+                let full_account = self
+                    .store
+                    .get_account(header.id())
+                    .await
+                    .map_err(ClientError::StoreError)?
+                    .and_then(|record| Account::try_from(record).ok());
+
+                accounts.push(AccountSyncData { header, full_account });
+            }
+        }
 
         let note_tags = self.store.get_unique_note_tags().await?;
 

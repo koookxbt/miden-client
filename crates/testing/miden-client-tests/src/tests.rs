@@ -611,7 +611,7 @@ async fn sync_state_no_redundant_get_account_calls() {
     let note_tags = BTreeSet::from([NoteTag::new(0)]);
 
     let input = StateSyncInput {
-        accounts: vec![account_header],
+        accounts: vec![account_header.into()],
         note_tags,
         input_notes: vec![],
         output_notes: vec![],

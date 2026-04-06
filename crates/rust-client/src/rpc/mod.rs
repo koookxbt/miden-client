@@ -40,7 +40,6 @@
 //! For further details and examples, see the documentation for the individual methods in the
 //! [`NodeRpcClient`] trait.
 
-use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::String;
@@ -52,7 +51,7 @@ use domain::note::{FetchedNote, NoteSyncInfo};
 use domain::nullifier::NullifierUpdate;
 use domain::sync::ChainMmrInfo;
 use miden_protocol::Word;
-use miden_protocol::account::{Account, AccountCode, AccountId};
+use miden_protocol::account::{AccountCode, AccountId};
 use miden_protocol::address::NetworkId;
 use miden_protocol::block::{BlockHeader, BlockNumber, ProvenBlock};
 use miden_protocol::crypto::merkle::mmr::MmrProof;
@@ -281,20 +280,6 @@ pub trait NodeRpcClient: Send + Sync {
         }
 
         Ok(public_notes)
-    }
-
-    /// Fetches the full state of a public account.
-    ///
-    /// This is a convenience wrapper around `get_account_details` that returns the [`Account`]
-    /// directly. Oversized maps and vaults are handled internally by `get_account_details`.
-    async fn get_full_public_account(&self, account_id: AccountId) -> Result<Account, RpcError> {
-        let response = self.get_account_details(account_id).await?;
-        match response {
-            FetchedAccount::Public(account, _) => Ok(*account),
-            FetchedAccount::Private(..) => Err(RpcError::ExpectedDataMissing(
-                "expected public account but got private".to_owned(),
-            )),
-        }
     }
 
     /// Given a block number, fetches the block header corresponding to that height from the node
