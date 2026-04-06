@@ -80,6 +80,7 @@ const WRITE_METHODS = new Set([
   "importPublicAccountFromSeed",
   "insertAccountAddress",
   "newAccount",
+  "pruneAccountHistory",
   "removeAccountAddress",
   "removeTag",
   "removeSetting",
@@ -110,6 +111,8 @@ const READ_METHODS = new Set([
   "listTags",
   "executeProgram",
 ]);
+
+const MOCK_STORE_NAME = "mock_client_db";
 
 // Suppress unused-variable warnings — these sets exist solely for the CI lint check.
 void SYNC_METHODS;
@@ -831,7 +834,16 @@ class WebClient {
 
 class MockWebClient extends WebClient {
   constructor(seed, logLevel) {
-    super(null, null, seed, "mock", undefined, undefined, undefined, logLevel);
+    super(
+      null,
+      null,
+      seed,
+      MOCK_STORE_NAME,
+      undefined,
+      undefined,
+      undefined,
+      logLevel
+    );
   }
 
   initializeWorker() {

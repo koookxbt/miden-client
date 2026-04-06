@@ -1,7 +1,7 @@
 use core::future::Future;
 use core::pin::Pin;
 use std::boxed::Box;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::env::temp_dir;
 use std::println;
 use std::sync::Arc;
@@ -63,6 +63,7 @@ use miden_client::transaction::{
     TransactionRequestError,
     TransactionStatus,
 };
+use miden_client::utils::Serializable;
 use miden_client::{ClientError, DebugMode};
 use miden_client_sqlite_store::ClientBuilderSqliteExt;
 use miden_protocol::account::{
@@ -82,7 +83,7 @@ use miden_protocol::account::{
     StorageSlotName,
 };
 use miden_protocol::asset::{Asset, AssetVaultKey, AssetWitness, FungibleAsset, TokenSymbol};
-use miden_protocol::crypto::rand::{FeltRng, RpoRandomCoin};
+use miden_protocol::crypto::rand::{FeltRng, RandomCoin};
 use miden_protocol::note::{
     Note,
     NoteAssets,
@@ -102,12 +103,12 @@ use miden_protocol::testing::account_id::{
     ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE,
     ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_UPDATABLE_CODE,
 };
-use miden_protocol::transaction::{OutputNote, TransactionKernel};
-use miden_protocol::utils::{Deserializable, Serializable};
+use miden_protocol::transaction::{RawOutputNote, TransactionKernel};
 use miden_protocol::vm::AdviceInputs;
 use miden_protocol::{EMPTY_WORD, Felt, ONE, Word};
 use miden_standards::account::faucets::BasicFungibleFaucet;
 use miden_standards::account::interface::AccountInterfaceError;
+use miden_standards::account::mint_policies::AuthControlled;
 use miden_standards::account::wallets::BasicWallet;
 use miden_standards::note::{NoteConsumptionStatus, P2idNoteStorage, StandardNote};
 use miden_standards::testing::mock_account::MockAccountExt;
@@ -298,7 +299,7 @@ async fn insert_same_account_twice_fails() {
 
     let account = Account::mock(
         ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_2,
-        AuthSingleSig::new(PublicKeyCommitment::from(EMPTY_WORD), AuthSchemeId::Falcon512Rpo),
+        AuthSingleSig::new(PublicKeyCommitment::from(EMPTY_WORD), AuthSchemeId::Falcon512Poseidon2),
     );
 
     assert!(client.add_account(&account, false).await.is_ok());
@@ -312,14 +313,14 @@ async fn account_code() {
 
     let account = Account::mock(
         ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE,
-        AuthSingleSig::new(PublicKeyCommitment::from(EMPTY_WORD), AuthSchemeId::Falcon512Rpo),
+        AuthSingleSig::new(PublicKeyCommitment::from(EMPTY_WORD), AuthSchemeId::Falcon512Poseidon2),
     );
 
     let account_code = account.code();
 
     let account_code_bytes = account_code.to_bytes();
 
-    let reconstructed_code = AccountCode::read_from_bytes(&account_code_bytes).unwrap();
+    let reconstructed_code = AccountCode::from_bytes(&account_code_bytes).unwrap();
     assert_eq!(*account_code, reconstructed_code);
 
     client.add_account(&account, false).await.unwrap();
@@ -334,7 +335,7 @@ async fn get_account_by_id() {
 
     let account = Account::mock(
         ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_UPDATABLE_CODE,
-        AuthSingleSig::new(PublicKeyCommitment::from(EMPTY_WORD), AuthSchemeId::Falcon512Rpo),
+        AuthSingleSig::new(PublicKeyCommitment::from(EMPTY_WORD), AuthSchemeId::Falcon512Poseidon2),
     );
 
     client.add_account(&account, false).await.unwrap();
@@ -818,7 +819,7 @@ async fn transaction_request_expiration() {
 
     let (_, tx_outputs, ..) = transaction_result.executed_transaction().clone().into_parts();
 
-    assert_eq!(tx_outputs.expiration_block_num, current_height + 5);
+    assert_eq!(tx_outputs.expiration_block_num(), current_height + 5);
 }
 
 #[tokio::test]
@@ -894,10 +895,8 @@ async fn note_without_asset() {
     let note = Note::new(vault.clone(), metadata, recipient.clone());
 
     // Create and execute transaction
-    let transaction_request = TransactionRequestBuilder::new()
-        .own_output_notes(vec![OutputNote::Full(note)])
-        .build()
-        .unwrap();
+    let transaction_request =
+        TransactionRequestBuilder::new().own_output_notes(vec![note]).build().unwrap();
 
     let transaction =
         Box::pin(client.execute_transaction(wallet.id(), transaction_request.clone())).await;
@@ -908,10 +907,8 @@ async fn note_without_asset() {
     let metadata = NoteMetadata::new(faucet.id(), NoteType::Private).with_tag(tag);
     let note = Note::new(vault, metadata, recipient);
 
-    let transaction_request = TransactionRequestBuilder::new()
-        .own_output_notes(vec![OutputNote::Full(note)])
-        .build()
-        .unwrap();
+    let transaction_request =
+        TransactionRequestBuilder::new().own_output_notes(vec![note]).build().unwrap();
 
     let error = Box::pin(client.submit_new_transaction(faucet.id(), transaction_request))
         .await
@@ -976,7 +973,7 @@ async fn execute_program() {
         wallet.id(),
         tx_script,
         AdviceInputs::default(),
-        BTreeSet::new(),
+        BTreeMap::new(),
     ))
     .await
     .unwrap();
@@ -2365,11 +2362,11 @@ async fn empty_storage_map() {
     let component = AccountComponent::new(
         component_code,
         vec![map_slot],
-        AccountComponentMetadata::new("miden::testing::dummy_component").with_supports_all_types(),
+        AccountComponentMetadata::new("miden::testing::dummy_component", AccountType::all()),
     )
     .unwrap();
 
-    let key_pair = AuthSecretKey::new_falcon512_rpo();
+    let key_pair = AuthSecretKey::new_falcon512_poseidon2();
     let pub_key = key_pair.public_key();
 
     let mut init_seed = [0u8; 32];
@@ -2380,7 +2377,7 @@ async fn empty_storage_map() {
         .storage_mode(AccountStorageMode::Public)
         .with_auth_component(AuthSingleSig::new(
             pub_key.to_commitment(),
-            AuthSchemeId::Falcon512Rpo,
+            AuthSchemeId::Falcon512Poseidon2,
         ))
         .with_component(BasicWallet)
         .with_component(component)
@@ -2461,8 +2458,7 @@ async fn storage_and_vault_proofs() {
     let bump_item_component = AccountComponent::new(
         bump_component_code,
         vec![bump_map_slot],
-        AccountComponentMetadata::new("miden::testing::bump_map_component")
-            .with_supports_all_types(),
+        AccountComponentMetadata::new("miden::testing::bump_map_component", AccountType::all()),
     )
     .unwrap();
 
@@ -2488,7 +2484,7 @@ async fn storage_and_vault_proofs() {
         )
         .unwrap();
 
-    let key_pair = AuthSecretKey::new_falcon512_rpo();
+    let key_pair = AuthSecretKey::new_falcon512_poseidon2();
     let pub_key = key_pair.public_key();
 
     let mut init_seed = [0u8; 32];
@@ -2499,7 +2495,7 @@ async fn storage_and_vault_proofs() {
         .storage_mode(AccountStorageMode::Public)
         .with_auth_component(AuthSingleSig::new(
             pub_key.to_commitment(),
-            AuthSchemeId::Falcon512Rpo,
+            AuthSchemeId::Falcon512Poseidon2,
         ))
         .with_component(BasicWallet)
         .with_component(bump_item_component)
@@ -2553,8 +2549,7 @@ async fn storage_and_vault_proofs() {
         assert_eq!(account_vault_root, vault.root());
 
         // Check that specific asset proof matches the one in the vault
-        let vault_key =
-            AssetVaultKey::from_account_id(faucet_account_id).expect("faucet id is fungible");
+        let vault_key = AssetVaultKey::new_fungible(faucet_account_id).unwrap();
         let (asset, witness) = client
             .test_store()
             .get_account_asset(account_id, vault_key)
@@ -2597,7 +2592,7 @@ async fn account_addresses_basic_wallet() {
 
     let account = Account::mock(
         ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_2,
-        AuthSingleSig::new(PublicKeyCommitment::from(EMPTY_WORD), AuthSchemeId::Falcon512Rpo),
+        AuthSingleSig::new(PublicKeyCommitment::from(EMPTY_WORD), AuthSchemeId::Falcon512Poseidon2),
     );
 
     client.add_account(&account, false).await.unwrap();
@@ -2637,7 +2632,7 @@ async fn account_add_address_after_creation() {
 
     let account = Account::mock(
         ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_2,
-        AuthSingleSig::new(PublicKeyCommitment::from(EMPTY_WORD), AuthSchemeId::Falcon512Rpo),
+        AuthSingleSig::new(PublicKeyCommitment::from(EMPTY_WORD), AuthSchemeId::Falcon512Poseidon2),
     );
 
     client.add_account(&account, false).await.unwrap();
@@ -2711,7 +2706,7 @@ async fn consume_note_with_custom_script() {
     assert!(client.test_store().get_note_script(note_script.root()).await.is_err());
 
     let tx_request = TransactionRequestBuilder::new()
-        .own_output_notes(vec![OutputNote::Full(custom_note.clone())])
+        .own_output_notes(vec![custom_note.clone()])
         .build()
         .unwrap();
     let _tx_id = Box::pin(client.submit_new_transaction(sender_id, tx_request)).await.unwrap();
@@ -2766,7 +2761,7 @@ async fn add_account_fails_if_accounts_limit_is_exceeded() {
                     (i << 8).into(),
                     AuthSingleSig::new(
                         PublicKeyCommitment::from(EMPTY_WORD),
-                        AuthSchemeId::Falcon512Rpo,
+                        AuthSchemeId::Falcon512Poseidon2,
                     ),
                 ),
                 false,
@@ -2782,7 +2777,7 @@ async fn add_account_fails_if_accounts_limit_is_exceeded() {
                 (RpcLimits::default().account_ids_limit << 8).into(),
                 AuthSingleSig::new(
                     PublicKeyCommitment::from(EMPTY_WORD),
-                    AuthSchemeId::Falcon512Rpo,
+                    AuthSchemeId::Falcon512Poseidon2,
                 ),
             ),
             false,
@@ -2967,7 +2962,7 @@ async fn sync_large_public_account() {
     // The pre-tx commitment differs from on-chain, which triggers sync.
     let mut rng = rand::rng();
     let coin_seed: [u64; 4] = rng.random();
-    let rng = RpoRandomCoin::new(coin_seed.map(Felt::new).into());
+    let rng = RandomCoin::new(coin_seed.map(Felt::new).into());
 
     let keystore_path = temp_dir();
     let keystore = FilesystemKeyStore::new(keystore_path).unwrap();
@@ -3033,7 +3028,7 @@ pub async fn create_test_client_builder()
     let mut rng = rand::rng();
     let coin_seed: [u64; 4] = rng.random();
 
-    let rng = RpoRandomCoin::new(coin_seed.map(Felt::new).into());
+    let rng = RandomCoin::new(coin_seed.map(Felt::new).into());
 
     let keystore_path = temp_dir();
     let keystore = FilesystemKeyStore::new(keystore_path).unwrap();
@@ -3059,14 +3054,14 @@ pub async fn create_prebuilt_mock_chain() -> MockChain {
         .unwrap();
 
     let note_first =
-        NoteBuilder::new(mock_account.id(), RpoRandomCoin::new([0, 0, 0, 0].map(Felt::new).into()))
+        NoteBuilder::new(mock_account.id(), RandomCoin::new([0, 0, 0, 0].map(Felt::new).into()))
             .note_type(NoteType::Public)
             .tag(NoteTag::new(0).into())
             .build()
             .unwrap();
 
     let note_second =
-        NoteBuilder::new(mock_account.id(), RpoRandomCoin::new([0, 0, 0, 1].map(Felt::new).into()))
+        NoteBuilder::new(mock_account.id(), RandomCoin::new([0, 0, 0, 1].map(Felt::new).into()))
             .note_type(NoteType::Public)
             .tag(NoteTag::new(0).into())
             .build()
@@ -3082,7 +3077,7 @@ pub async fn create_prebuilt_mock_chain() -> MockChain {
         mock_chain
             .build_tx_context(TxContextInput::AccountId(mock_account.id()), &[], &[spawn_note_1])
             .unwrap()
-            .extend_expected_output_notes(vec![OutputNote::Full(note_first)])
+            .extend_expected_output_notes(vec![RawOutputNote::Full(note_first)])
             .build()
             .unwrap()
             .execute(),
@@ -3104,7 +3099,7 @@ pub async fn create_prebuilt_mock_chain() -> MockChain {
         mock_chain
             .build_tx_context(mock_account.id(), &[], &[spawn_note_2])
             .unwrap()
-            .extend_expected_output_notes(vec![OutputNote::Full(note_second.clone())])
+            .extend_expected_output_notes(vec![RawOutputNote::Full(note_second.clone())])
             .build()
             .unwrap()
             .execute(),
@@ -3138,7 +3133,7 @@ async fn insert_new_wallet(
     storage_mode: AccountStorageMode,
     keystore: &FilesystemKeyStore,
 ) -> Result<Account, ClientError> {
-    let key_pair = AuthSecretKey::new_falcon512_rpo_with_rng(client.rng());
+    let key_pair = AuthSecretKey::new_falcon512_poseidon2_with_rng(client.rng());
     let pub_key = key_pair.public_key();
 
     let mut init_seed = [0u8; 32];
@@ -3149,7 +3144,7 @@ async fn insert_new_wallet(
         .storage_mode(storage_mode)
         .with_auth_component(AuthSingleSig::new(
             pub_key.to_commitment(),
-            AuthSchemeId::Falcon512Rpo,
+            AuthSchemeId::Falcon512Poseidon2,
         ))
         .with_component(BasicWallet)
         .build()
@@ -3196,7 +3191,7 @@ async fn insert_new_fungible_faucet(
     storage_mode: AccountStorageMode,
     keystore: &FilesystemKeyStore,
 ) -> Result<Account, ClientError> {
-    let key_pair = AuthSecretKey::new_falcon512_rpo_with_rng(client.rng());
+    let key_pair = AuthSecretKey::new_falcon512_poseidon2_with_rng(client.rng());
     let pub_key = key_pair.public_key();
 
     // we need to use an initial seed to create the wallet account
@@ -3204,17 +3199,17 @@ async fn insert_new_fungible_faucet(
     client.rng().fill_bytes(&mut init_seed);
 
     let symbol = TokenSymbol::new("TEST").unwrap();
-    let max_supply = Felt::try_from(9_999_999_u64.to_le_bytes().as_slice())
-        .expect("u64 can be safely converted to a field element");
+    let max_supply = Felt::new(9_999_999_u64);
 
     let account = AccountBuilder::new(init_seed)
         .account_type(AccountType::FungibleFaucet)
         .storage_mode(storage_mode)
         .with_auth_component(AuthSingleSig::new(
             pub_key.to_commitment(),
-            AuthSchemeId::Falcon512Rpo,
+            AuthSchemeId::Falcon512Poseidon2,
         ))
         .with_component(BasicFungibleFaucet::new(symbol, 10, max_supply).unwrap())
+        .with_component(AuthControlled::allow_all())
         .build()
         .unwrap();
 
@@ -3240,8 +3235,7 @@ async fn insert_new_ecdsa_fungible_faucet(
     client.rng().fill_bytes(&mut init_seed);
 
     let symbol = TokenSymbol::new("TEST").unwrap();
-    let max_supply = Felt::try_from(9_999_999_u64.to_le_bytes().as_slice())
-        .expect("u64 can be safely converted to a field element");
+    let max_supply = Felt::new(9_999_999_u64);
 
     let account = AccountBuilder::new(init_seed)
         .account_type(AccountType::FungibleFaucet)
@@ -3251,6 +3245,7 @@ async fn insert_new_ecdsa_fungible_faucet(
             AuthSchemeId::EcdsaK256Keccak,
         ))
         .with_component(BasicFungibleFaucet::new(symbol, 10, max_supply).unwrap())
+        .with_component(AuthControlled::allow_all())
         .build()
         .unwrap();
 
@@ -3289,8 +3284,7 @@ async fn storage_and_vault_proofs_ecdsa() {
     let bump_item_component = AccountComponent::new(
         bump_component_code,
         vec![bump_map_slot],
-        AccountComponentMetadata::new("miden::testing::bump_map_component")
-            .with_supports_all_types(),
+        AccountComponentMetadata::new("miden::testing::bump_map_component", AccountType::all()),
     )
     .unwrap();
 
@@ -3377,8 +3371,7 @@ async fn storage_and_vault_proofs_ecdsa() {
         assert_eq!(account_vault_root, vault.root());
 
         // Check that specific asset proof matches the one in the vault
-        let vault_key =
-            AssetVaultKey::from_account_id(faucet_account_id).expect("faucet id is fungible");
+        let vault_key = AssetVaultKey::new_fungible(faucet_account_id).unwrap();
         let (asset, witness) = client
             .test_store()
             .get_account_asset(account_id, vault_key)

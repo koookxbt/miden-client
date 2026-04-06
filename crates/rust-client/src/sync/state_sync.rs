@@ -182,11 +182,9 @@ impl StateSync {
             output_notes,
             uncommitted_transactions,
         } = input;
-        let block_num = u32::try_from(
-            current_partial_mmr.forest().num_leaves().checked_sub(1).unwrap_or_default(),
-        )
-        .map_err(|_| ClientError::InvalidPartialMmrForest)?
-        .into();
+        let block_num = u32::try_from(current_partial_mmr.forest().num_leaves().saturating_sub(1))
+            .map_err(|_| ClientError::InvalidPartialMmrForest)?
+            .into();
 
         let mut state_sync_update = StateSyncUpdate {
             block_num,
@@ -469,7 +467,8 @@ impl StateSync {
                 FetchedAccount::Public(account, _) => {
                     let account = *account;
                     // Only update if the account is newer.
-                    if account.nonce().as_int() > local_account.nonce().as_int() {
+                    if account.nonce().as_canonical_u64() > local_account.nonce().as_canonical_u64()
+                    {
                         account_updates.extend(AccountUpdates::new(vec![account], Vec::new()));
                     }
                 },
